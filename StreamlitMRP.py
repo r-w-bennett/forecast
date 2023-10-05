@@ -5,6 +5,23 @@ import streamlit as st
 import os
 import signal
 import altair as alt
+from io import StringIO
+
+# Add widgets for user input
+bom_data_input = st.text_area("Paste BOM Data (CSV format):")
+item_master_data_input = st.text_area("Paste Item Master Data (CSV format):")
+inventory_data_input = st.text_area("Paste Inventory Data (CSV format):")
+existing_orders_data_input = st.text_area("Paste Existing Orders Data (CSV format):")
+
+# Convert the user input to DataFrames
+if bom_data_input:
+    bom_data = pd.read_csv(StringIO(bom_data_input))
+if item_master_data_input:
+    item_master_data = pd.read_csv(StringIO(item_master_data_input))
+if inventory_data_input:
+    inventory_data = pd.read_csv(StringIO(inventory_data_input))
+if existing_orders_data_input:
+    existing_orders_data = pd.read_csv(StringIO(existing_orders_data_input))
 
 # Sample DataFrames (To Be Replaced with Actuals)
 item_master_data = pd.DataFrame({

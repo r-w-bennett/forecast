@@ -7,21 +7,14 @@ import signal
 import altair as alt
 from io import StringIO
 
+# Streamlit App Configuration
+st.set_page_config(layout="wide")
+
 # Add widgets for user input
 bom_data_input = st.text_area("Paste BOM Data (CSV format):")
 item_master_data_input = st.text_area("Paste Item Master Data (CSV format):")
 inventory_data_input = st.text_area("Paste Inventory Data (CSV format):")
 existing_orders_data_input = st.text_area("Paste Existing Orders Data (CSV format):")
-
-# Convert the user input to DataFrames
-if bom_data_input:
-    bom_data = pd.read_csv(StringIO(bom_data_input))
-if item_master_data_input:
-    item_master_data = pd.read_csv(StringIO(item_master_data_input))
-if inventory_data_input:
-    inventory_data = pd.read_csv(StringIO(inventory_data_input))
-if existing_orders_data_input:
-    existing_orders_data = pd.read_csv(StringIO(existing_orders_data_input))
 
 # Sample DataFrames (To Be Replaced with Actuals)
 item_master_data = pd.DataFrame({
@@ -50,6 +43,16 @@ demand_over_time_data = pd.DataFrame([{'Item': 'Breast 500g Tray', 'Demand': 20 
 
 existing_orders_data = pd.DataFrame([{'Item': item, 'Order': 40 if item == 'Breast' else 35 if item == 'Drumstick' else 45, 'Week': week} 
                                      for week in range(1, 5) for item in ['Breast', 'Drumstick', 'Tray']])
+
+# Convert the user input to DataFrames
+if bom_data_input:
+    bom_data = pd.read_csv(StringIO(bom_data_input))
+if item_master_data_input:
+    item_master_data = pd.read_csv(StringIO(item_master_data_input))
+if inventory_data_input:
+    inventory_data = pd.read_csv(StringIO(inventory_data_input))
+if existing_orders_data_input:
+    existing_orders_data = pd.read_csv(StringIO(existing_orders_data_input))
 
 # Generate a DataFrame containing all combinations of items and weeks
 all_items = item_master_data['Item'].unique()
@@ -385,9 +388,6 @@ def plot_item_tables(df, item_master_data, all_messages_df):
         )
 
         st.altair_chart(chart, use_container_width=True)
-
-# Streamlit App Configuration
-st.set_page_config(layout="wide")
 
 # Streamlit App
 st.title('MRP Dashboard')

@@ -5,54 +5,42 @@ import streamlit as st
 import os
 import signal
 import altair as alt
-from io import StringIO
+import numpy as np
 
 # Streamlit App Configuration
 st.set_page_config(layout="wide")
 
-# Add widgets for user input
-bom_data_input = st.text_area("Paste BOM Data (CSV format):")
-item_master_data_input = st.text_area("Paste Item Master Data (CSV format):")
-inventory_data_input = st.text_area("Paste Inventory Data (CSV format):")
-existing_orders_data_input = st.text_area("Paste Existing Orders Data (CSV format):")
-
 # Sample DataFrames (To Be Replaced with Actuals)
 item_master_data = pd.DataFrame({
     'Item': ['Breast 500g Tray', 'Drumstick 500g Tray', 'Breast', 'Drumstick', 'Tray'],
-    'Lead Time': [0, 0, 1, 1, 1],
-    'Order Type': [0, 0, 1, 1, 1],
-    'MoQ': [5, 10, 5, 20, 10],
-    'Safety Stock': [20, 10, 20, 10, 20],
-    'Putaway Time': [0, 0, 1, 1, 1]
+    'Lead Time': pd.to_numeric([0, 0, 1, 1, 1]),
+    'Order Type': pd.to_numeric([0, 0, 1, 1, 1]),
+    'MoQ': pd.to_numeric([5, 10, 5, 20, 10]),
+    'Safety Stock': pd.to_numeric([20, 10, 20, 10, 20]),
+    'Putaway Time': pd.to_numeric([0, 0, 1, 1, 1])
 })
 
 bom_data = pd.DataFrame({
     'Parent Item': ['Breast 500g Tray', 'Breast 500g Tray', 'Drumstick 500g Tray', 'Drumstick 500g Tray'],
     'Child Item': ['Breast', 'Tray', 'Drumstick', 'Tray'],
-    'Ratio': [2, 1, 2, 1]
+    'Ratio': pd.to_numeric([2, 1, 2, 1])
 })
 
 inventory_data = pd.DataFrame({
     'Item': ['Breast 500g Tray', 'Drumstick 500g Tray', 'Breast', 'Drumstick', 'Tray'],
-    'Inventory': [25, 30, 40, 35, 50]
+    'Inventory': pd.to_numeric([25, 30, 40, 35, 50])
 })
 
 weeks = list(range(0, 13))
-demand_over_time_data = pd.DataFrame([{'Item': 'Breast 500g Tray', 'Demand': 20 + week, 'Week': week} for week in weeks] +
-                                    [{'Item': 'Drumstick 500g Tray', 'Demand': 15 + week, 'Week': week} for week in weeks])
+demand_over_time_data = pd.DataFrame([{'Item': 'Breast 500g Tray', 'Demand': pd.to_numeric(20 + week), 'Week': pd.to_numeric(week)} for week in weeks] +
+                                    [{'Item': 'Drumstick 500g Tray', 'Demand': pd.to_numeric(15 + week), 'Week': pd.to_numeric(week)} for week in weeks])
 
-existing_orders_data = pd.DataFrame([{'Item': item, 'Order': 40 if item == 'Breast' else 35 if item == 'Drumstick' else 45, 'Week': week} 
+existing_orders_data = pd.DataFrame([{'Item': item, 'Order': pd.to_numeric(40 if item == 'Breast' else 35 if item == 'Drumstick' else 45), 'Week': pd.to_numeric(week)} 
                                      for week in range(1, 5) for item in ['Breast', 'Drumstick', 'Tray']])
 
-# Convert the user input to DataFrames
-if bom_data_input:
-    bom_data = pd.read_csv(StringIO(bom_data_input))
-if item_master_data_input:
-    item_master_data = pd.read_csv(StringIO(item_master_data_input))
-if inventory_data_input:
-    inventory_data = pd.read_csv(StringIO(inventory_data_input))
-if existing_orders_data_input:
-    existing_orders_data = pd.read_csv(StringIO(existing_orders_data_input))
+
+# Streamlit App
+st.title('MRP Dashboard')
 
 # Generate a DataFrame containing all combinations of items and weeks
 all_items = item_master_data['Item'].unique()
@@ -168,145 +156,149 @@ def order_and_available_calc(df, inventory_data):
     
     return df
 
-# Call the function
-initial_result_df = order_and_available_calc(initial_demand_profile, inventory_data)
+# New function to update item_master_data
+def update_item_master_data(item_master_data, selected_item, selected_field, new_value):
+    item_master_data.loc[item_master_data['Item'] == selected_item, selected_field] = new_value
+    return item_master_data
 
-# Create final_result_df by filtering on Order Type = 1 and selecting specific columns
-final_result_df = initial_result_df[initial_result_df['Order Type'] == 1][['Item', 'Week', 'Demand', 'Lead Time', 'Order Type', 'MoQ', 'Safety Stock', 'Putaway Time', 'Order']]
+def recalculate_dataframes(item_master_data, inventory_data, bom_data, existing_orders_data):
+    # Call the function
+    initial_result_df = order_and_available_calc(initial_demand_profile, inventory_data)
 
-# Create explosion_df by filtering on Order Type = 0 and selecting specific columns
-explosion_df = initial_result_df[initial_result_df['Order Type'] == 0][['Item', 'Week', 'Demand', 'Lead Time', 'Order Type', 'MoQ', 'Safety Stock', 'Putaway Time', 'Order', 'Planned Order Release']]
+    # Create final_result_df by filtering on Order Type = 1 and selecting specific columns
+    final_result_df = initial_result_df[initial_result_df['Order Type'] == 1][['Item', 'Week', 'Demand', 'Lead Time', 'Order Type', 'MoQ', 'Safety Stock', 'Putaway Time', 'Order']]
 
-# Create an empty dataframe to hold processed demand
-processed_demand = pd.DataFrame()
+    # Create explosion_df by filtering on Order Type = 0 and selecting specific columns
+    explosion_df = initial_result_df[initial_result_df['Order Type'] == 0][['Item', 'Week', 'Demand', 'Lead Time', 'Order Type', 'MoQ', 'Safety Stock', 'Putaway Time', 'Order', 'Planned Order Release']]
 
-while not explosion_df.empty:
-    # Step 1: Concatenate rows with order type = 1 to processed_demand
-    processed_demand = pd.concat([processed_demand, explosion_df[explosion_df['Order Type'] == 1]])
+    # Create an empty dataframe to hold processed demand
+    processed_demand = pd.DataFrame()
+
+    while not explosion_df.empty:
+        # Step 1: Concatenate rows with order type = 1 to processed_demand
+        processed_demand = pd.concat([processed_demand, explosion_df[explosion_df['Order Type'] == 1]])
+        
+        # Drop these rows from explosion_df
+        explosion_df = explosion_df[explosion_df['Order Type'] != 1]
+
+        # Step 2: Check if explosion_df is empty, and if so, exit the loop
+        if explosion_df.empty:
+            break
+        
+        # Step 3: Change Order Type values
+        explosion_df['Order Type'] = 1
+
+        # Insert rows for child items
+        child_rows = []
+        for _, row in explosion_df.iterrows():
+            parent_item = row['Item']
+            week = row['Week']
+            parent_order_release = row['Planned Order Release']
+
+            for _, bom_row in bom_data[bom_data['Parent Item'] == parent_item].iterrows():
+                child_item = bom_row['Child Item']
+                ratio = bom_row['Ratio']
+                child_demand = parent_order_release * ratio
+                
+                item_data = item_master_data[item_master_data['Item'] == child_item].iloc[0]
+                child_order = existing_orders_data[
+                    (existing_orders_data['Item'] == child_item) & 
+                    (existing_orders_data['Week'] == week)
+                ]['Order'].values[0] if not existing_orders_data[
+                    (existing_orders_data['Item'] == child_item) & 
+                    (existing_orders_data['Week'] == week)
+                ].empty else 0
+
+                child_rows.append({
+                    'Item': child_item,
+                    'Week': week,
+                    'Demand': child_demand,
+                    'Lead Time': item_data['Lead Time'],
+                    'Order Type': item_data['Order Type'],
+                    'MoQ': item_data['MoQ'],
+                    'Safety Stock': item_data['Safety Stock'],
+                    'Putaway Time': item_data['Putaway Time'],
+                    'Order': child_order,
+                    'Planned Order Release': 0
+                })
+
+        child_df = pd.DataFrame(child_rows)
+        explosion_df = pd.concat([explosion_df, child_df])
+
+        # Step 4: Remove 'Planned Order Release' column
+        explosion_df.drop('Planned Order Release', axis=1, inplace=True)
+        
+        # After Step 4, Before Step 5: Group by columns and sum up the Demand
+        explosion_df = explosion_df.groupby(['Item', 'Week', 'Lead Time', 'Order Type', 'MoQ', 'Safety Stock', 'Putaway Time', 'Order']).agg({'Demand': 'sum'}).reset_index()
+        
+        # Step 5: Call order_and_available_calc function
+        
+        # Step 5: Call order_and_available_calc function
+        explosion_df = order_and_available_calc(explosion_df, inventory_data)
+        
+        # Step 6: Select necessary columns
+        explosion_df = explosion_df[['Item', 'Week', 'Demand', 'Lead Time', 'Order Type', 'MoQ', 'Safety Stock', 'Putaway Time', 'Order', 'Planned Order Release']]
+
+    # End of the loop
+
+    # Drop the 'Planned Order Release' column from processed_demand
+    processed_demand.drop('Planned Order Release', axis=1, inplace=True)
+
+    # Concatenate processed_demand onto final_result_df
+    final_result_df = pd.concat([final_result_df, processed_demand])
+
+    # Group by the provided columns and sum up the Demand
+    final_result_df = final_result_df.groupby(['Item', 'Week', 'Lead Time', 'Order Type', 'MoQ', 'Safety Stock', 'Putaway Time', 'Order']).agg({'Demand': 'sum'}).reset_index()
+
+    # Merge to get the correct 'Order Type' from item_master_data
+    final_result_df = final_result_df.merge(item_master_data[['Item', 'Order Type']], on='Item', how='left')
+
+    # Drop the original 'Order Type' column and rename the new one
+    final_result_df.drop('Order Type_x', axis=1, inplace=True)
+    final_result_df.rename(columns={'Order Type_y': 'Order Type'}, inplace=True)
+
+    # Call order_and_available_calc on final_result_df to generate mrp_df
+    mrp_df = order_and_available_calc(final_result_df, inventory_data)
+
+    # List of columns to format
+    cols_to_format = ['Order', 'Demand', 'SOH', 'Available To Promise', 'Planned Order Receipt', 'Planned Order Release']
+
+    # Format the columns
+    for col in cols_to_format:
+        mrp_df[col] = mrp_df[col].round(0).astype(int)  # First, round to 0 decimal places and convert to integer
+        mrp_df[col] = mrp_df[col].apply(lambda x: '{:,}'.format(x))  # Then, format with commas
+        
+    # Copy mrp_df to a new DataFrame
+    mrp_df_copy = mrp_df.copy()
+
+    # Convert 'Available To Promise' and 'Planned Order Release' back to integer for comparison
+    mrp_df_copy['Available To Promise'] = mrp_df_copy['Available To Promise'].str.replace(',', '').astype(int)
+    mrp_df_copy['Planned Order Release'] = mrp_df_copy['Planned Order Release'].str.replace(',', '').astype(int)
+
+    # Filter rows where 'Available To Promise' is less than 0
+    shortage_df = mrp_df_copy[mrp_df_copy['Available To Promise'] < 0][['Item', 'Week']]
+
+    # Create a new column with the shortage message
+    shortage_df['Message'] = shortage_df.apply(lambda row: f"{row['Item']} shortage in week {row['Week']}", axis=1)
+
+    # Filter rows where 'Week' is 0 and 'Planned Order Release' is greater than 0
+    order_release_df = mrp_df_copy[(mrp_df_copy['Week'] == 0) & (mrp_df_copy['Planned Order Release'] > 0)][['Item', 'Week']]
+
+    # Create a new column with the order release message
+    order_release_df['Message'] = order_release_df.apply(lambda row: f"Order Release Required for {row['Item']} in week {row['Week']}", axis=1)
+
+    # Filter rows where 'Available To Promise' is less than 'Safety Stock' and greater than or equal to 0
+    safety_stock_df = mrp_df_copy[(mrp_df_copy['Available To Promise'] < mrp_df_copy['Safety Stock']) & (mrp_df_copy['Available To Promise'] >= 0)][['Item', 'Week']]
+
+    # Create a new column with the safety stock message
+    safety_stock_df['Message'] = safety_stock_df.apply(lambda row: f"Below Safety Stock for {row['Item']} in week {row['Week']}", axis=1)
+
+    # Concatenate the three DataFrames to have all messages
+    all_messages_df = pd.concat([shortage_df, order_release_df, safety_stock_df], ignore_index=True)
     
-    # Drop these rows from explosion_df
-    explosion_df = explosion_df[explosion_df['Order Type'] != 1]
+    return final_result_df, mrp_df, all_messages_df, item_master_data
 
-    # Step 2: Check if explosion_df is empty, and if so, exit the loop
-    if explosion_df.empty:
-        break
-    
-    # Step 3: Change Order Type values
-    explosion_df['Order Type'] = 1
-
-    # Insert rows for child items
-    child_rows = []
-    for _, row in explosion_df.iterrows():
-        parent_item = row['Item']
-        week = row['Week']
-        parent_order_release = row['Planned Order Release']
-
-        for _, bom_row in bom_data[bom_data['Parent Item'] == parent_item].iterrows():
-            child_item = bom_row['Child Item']
-            ratio = bom_row['Ratio']
-            child_demand = parent_order_release * ratio
-            
-            item_data = item_master_data[item_master_data['Item'] == child_item].iloc[0]
-            child_order = existing_orders_data[
-                (existing_orders_data['Item'] == child_item) & 
-                (existing_orders_data['Week'] == week)
-            ]['Order'].values[0] if not existing_orders_data[
-                (existing_orders_data['Item'] == child_item) & 
-                (existing_orders_data['Week'] == week)
-            ].empty else 0
-
-            child_rows.append({
-                'Item': child_item,
-                'Week': week,
-                'Demand': child_demand,
-                'Lead Time': item_data['Lead Time'],
-                'Order Type': item_data['Order Type'],
-                'MoQ': item_data['MoQ'],
-                'Safety Stock': item_data['Safety Stock'],
-                'Putaway Time': item_data['Putaway Time'],
-                'Order': child_order,
-                'Planned Order Release': 0
-            })
-
-    child_df = pd.DataFrame(child_rows)
-    explosion_df = pd.concat([explosion_df, child_df])
-
-    # Step 4: Remove 'Planned Order Release' column
-    explosion_df.drop('Planned Order Release', axis=1, inplace=True)
-    
-    # After Step 4, Before Step 5: Group by columns and sum up the Demand
-    explosion_df = explosion_df.groupby(['Item', 'Week', 'Lead Time', 'Order Type', 'MoQ', 'Safety Stock', 'Putaway Time', 'Order']).agg({'Demand': 'sum'}).reset_index()
-    
-    # Step 5: Call order_and_available_calc function
-    
-    # Step 5: Call order_and_available_calc function
-    explosion_df = order_and_available_calc(explosion_df, inventory_data)
-    
-    # Step 6: Select necessary columns
-    explosion_df = explosion_df[['Item', 'Week', 'Demand', 'Lead Time', 'Order Type', 'MoQ', 'Safety Stock', 'Putaway Time', 'Order', 'Planned Order Release']]
-
-# End of the loop
-
-# Drop the 'Planned Order Release' column from processed_demand
-processed_demand.drop('Planned Order Release', axis=1, inplace=True)
-
-# Concatenate processed_demand onto final_result_df
-final_result_df = pd.concat([final_result_df, processed_demand])
-
-# Group by the provided columns and sum up the Demand
-final_result_df = final_result_df.groupby(['Item', 'Week', 'Lead Time', 'Order Type', 'MoQ', 'Safety Stock', 'Putaway Time', 'Order']).agg({'Demand': 'sum'}).reset_index()
-
-# Merge to get the correct 'Order Type' from item_master_data
-final_result_df = final_result_df.merge(item_master_data[['Item', 'Order Type']], on='Item', how='left')
-
-# Drop the original 'Order Type' column and rename the new one
-final_result_df.drop('Order Type_x', axis=1, inplace=True)
-final_result_df.rename(columns={'Order Type_y': 'Order Type'}, inplace=True)
-
-
-# Call order_and_available_calc on final_result_df to generate mrp_df
-mrp_df = order_and_available_calc(final_result_df, inventory_data)
-
-# List of columns to format
-cols_to_format = ['Order', 'Demand', 'SOH', 'Available To Promise', 'Planned Order Receipt', 'Planned Order Release']
-
-# Format the columns
-for col in cols_to_format:
-    mrp_df[col] = mrp_df[col].round(0).astype(int)  # First, round to 0 decimal places and convert to integer
-    mrp_df[col] = mrp_df[col].apply(lambda x: '{:,}'.format(x))  # Then, format with commas
-    
-# Copy mrp_df to a new DataFrame
-mrp_df_copy = mrp_df.copy()
-
-# Convert 'Available To Promise' and 'Planned Order Release' back to integer for comparison
-mrp_df_copy['Available To Promise'] = mrp_df_copy['Available To Promise'].str.replace(',', '').astype(int)
-mrp_df_copy['Planned Order Release'] = mrp_df_copy['Planned Order Release'].str.replace(',', '').astype(int)
-
-# Filter rows where 'Available To Promise' is less than 0
-shortage_df = mrp_df_copy[mrp_df_copy['Available To Promise'] < 0][['Item', 'Week']]
-
-# Create a new column with the shortage message
-shortage_df['Message'] = shortage_df.apply(lambda row: f"{row['Item']} shortage in week {row['Week']}", axis=1)
-
-# Filter rows where 'Week' is 0 and 'Planned Order Release' is greater than 0
-order_release_df = mrp_df_copy[(mrp_df_copy['Week'] == 0) & (mrp_df_copy['Planned Order Release'] > 0)][['Item', 'Week']]
-
-# Create a new column with the order release message
-order_release_df['Message'] = order_release_df.apply(lambda row: f"Order Release Required for {row['Item']} in week {row['Week']}", axis=1)
-
-# Filter rows where 'Available To Promise' is less than 'Safety Stock' and greater than or equal to 0
-safety_stock_df = mrp_df_copy[(mrp_df_copy['Available To Promise'] < mrp_df_copy['Safety Stock']) & (mrp_df_copy['Available To Promise'] >= 0)][['Item', 'Week']]
-
-# Create a new column with the safety stock message
-safety_stock_df['Message'] = safety_stock_df.apply(lambda row: f"Below Safety Stock for {row['Item']} in week {row['Week']}", axis=1)
-
-# Concatenate the three DataFrames to have all messages
-all_messages_df = pd.concat([shortage_df, order_release_df, safety_stock_df], ignore_index=True)
-
-# Now, all_messages_df contains both types of messages, each in its own row.
-
-# Display the updated DataFrame
-print(mrp_df)
+final_result_df, mrp_df, all_messages_df, item_master_data = recalculate_dataframes(item_master_data, inventory_data, bom_data, existing_orders_data)
 
 def plot_item_tables(df, item_master_data, all_messages_df):
     # Get unique items
@@ -388,19 +380,36 @@ def plot_item_tables(df, item_master_data, all_messages_df):
         )
 
         st.altair_chart(chart, use_container_width=True)
+        
+    # New Section: Add a section for updating item_master_data
+    st.write('### Update Item Data')
+    # Streamlit code for dropdown and button
+    selected_item = st.selectbox('Select Item', item_master_data['Item'].unique())
+    selected_field = st.selectbox('Select Field to Update', item_master_data.columns[1:])
+    new_value = st.number_input(f'New Value for {selected_field}')
 
-# Streamlit App
-st.title('MRP Dashboard')
+    if st.button('Update'):
+        updated_item_master_data = update_item_master_data(item_master_data, selected_item, selected_field, new_value)
+        # Rerun calculations and update the Streamlit app
+        final_result_df, mrp_df, all_messages_df, item_master_data = recalculate_dataframes(updated_item_master_data, inventory_data, bom_data, existing_orders_data)
+        st.rerun()
 
 # Sidebar for navigation
 page = st.sidebar.radio(
     'Select a Page',
-    ['Exception Messages', 'Item Details']
+    ['Home', 'Exception Messages', 'Item Details']
 )
 
-if page == 'Item Details':
+if page == 'Home':
+    st.title('Home')
+    st.write("Welcome to the MRP demonstration dashboard.")
+    st.write("This dashboard is intended to offer a basic understanding of the functionality of Material Requirements Planning, and how different data inputs impact calculation.")
+    st.write("It is important to note that whilst you can get a good overview of the fundamentals of MRP here, that a live environment contained within an ERP system is significantly more complex, requiring a high level of experience to manage correctly.")
+
+elif page == 'Item Details':
     st.title('Item Details')
     plot_item_tables(mrp_df, item_master_data, all_messages_df)
+
 elif page == 'Exception Messages':
     st.title('Exception Messages')
     if all_messages_df.empty:
@@ -408,6 +417,6 @@ elif page == 'Exception Messages':
     else:
         st.table(all_messages_df.set_index('Week'))
 
-if st.button('Close app'):
-    st.write('Closing the app...')
+if st.sidebar.button('Close app'):
+    st.sidebar.write('Closing the app...')
     os.kill(os.getpid(), signal.SIGTERM)

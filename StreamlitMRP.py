@@ -5,51 +5,56 @@ import streamlit as st
 import os
 import signal
 import altair as alt
-import numpy as np
 
 # Streamlit App Configuration
 st.set_page_config(layout="wide")
 
-# Sample DataFrames (To Be Replaced with Actuals)
-item_master_data = pd.DataFrame({
-    'Item': ['Breast 500g Tray', 'Drumstick 500g Tray', 'Breast', 'Drumstick', 'Tray'],
-    'Lead Time': pd.to_numeric([0, 0, 1, 1, 1]),
-    'Order Type': pd.to_numeric([0, 0, 1, 1, 1]),
-    'MoQ': pd.to_numeric([5, 10, 5, 20, 10]),
-    'Safety Stock': pd.to_numeric([20, 10, 20, 10, 20]),
-    'Putaway Time': pd.to_numeric([0, 0, 1, 1, 1])
-})
+if 'item_master_data' not in st.session_state:
+    st.session_state['item_master_data'] = pd.DataFrame({
+        'Item': ['Breast 500g Tray', 'Drumstick 500g Tray', 'Breast', 'Drumstick', 'Tray'],
+        'Lead Time': pd.to_numeric([0, 0, 1, 1, 1]),
+        'Order Type': pd.to_numeric([0, 0, 1, 1, 1]),
+        'MoQ': pd.to_numeric([5, 10, 5, 20, 10]),
+        'Safety Stock': pd.to_numeric([20, 10, 20, 10, 20]),
+        'Putaway Time': pd.to_numeric([0, 0, 1, 1, 1])
+    })
 
-bom_data = pd.DataFrame({
-    'Parent Item': ['Breast 500g Tray', 'Breast 500g Tray', 'Drumstick 500g Tray', 'Drumstick 500g Tray'],
-    'Child Item': ['Breast', 'Tray', 'Drumstick', 'Tray'],
-    'Ratio': pd.to_numeric([2, 1, 2, 1])
-})
+if 'bom_data' not in st.session_state:
+    st.session_state['bom_data'] = pd.DataFrame({
+        'Parent Item': ['Breast 500g Tray', 'Breast 500g Tray', 'Drumstick 500g Tray', 'Drumstick 500g Tray'],
+        'Child Item': ['Breast', 'Tray', 'Drumstick', 'Tray'],
+        'Ratio': pd.to_numeric([2, 1, 2, 1])
+    })
 
-inventory_data = pd.DataFrame({
-    'Item': ['Breast 500g Tray', 'Drumstick 500g Tray', 'Breast', 'Drumstick', 'Tray'],
-    'Inventory': pd.to_numeric([25, 30, 40, 35, 50])
-})
+if 'inventory_data' not in st.session_state:
+    st.session_state['inventory_data'] = pd.DataFrame({
+        'Item': ['Breast 500g Tray', 'Drumstick 500g Tray', 'Breast', 'Drumstick', 'Tray'],
+        'Inventory': pd.to_numeric([25, 30, 40, 35, 50])
+    })
 
-weeks = list(range(0, 13))
-demand_over_time_data = pd.DataFrame([{'Item': 'Breast 500g Tray', 'Demand': pd.to_numeric(20 + week), 'Week': pd.to_numeric(week)} for week in weeks] +
-                                    [{'Item': 'Drumstick 500g Tray', 'Demand': pd.to_numeric(15 + week), 'Week': pd.to_numeric(week)} for week in weeks])
+if 'weeks' not in st.session_state:
+    st.session_state['weeks'] = list(range(0, 13))
 
-existing_orders_data = pd.DataFrame([{'Item': item, 'Order': pd.to_numeric(40 if item == 'Breast' else 35 if item == 'Drumstick' else 45), 'Week': pd.to_numeric(week)} 
-                                     for week in range(1, 5) for item in ['Breast', 'Drumstick', 'Tray']])
+if 'demand_over_time_data' not in st.session_state:
+    st.session_state['demand_over_time_data'] = pd.DataFrame([{'Item': 'Breast 500g Tray', 'Demand': pd.to_numeric(20 + week), 'Week': pd.to_numeric(week)} for week in st.session_state['weeks']] +
+                                                            [{'Item': 'Drumstick 500g Tray', 'Demand': pd.to_numeric(15 + week), 'Week': pd.to_numeric(week)} for week in st.session_state['weeks']])
+
+if 'existing_orders_data' not in st.session_state:
+    st.session_state['existing_orders_data'] = pd.DataFrame([{'Item': item, 'Order': pd.to_numeric(40 if item == 'Breast' else 35 if item == 'Drumstick' else 45), 'Week': pd.to_numeric(week)} 
+                                                             for week in range(1, 5) for item in ['Breast', 'Drumstick', 'Tray']])
 
 
 # Streamlit App
 st.title('MRP Dashboard')
 
 # Generate a DataFrame containing all combinations of items and weeks
-all_items = item_master_data['Item'].unique()
+all_items = st.session_state.item_master_data['Item'].unique()
 all_weeks = list(range(0, 13))
 all_combinations = pd.DataFrame([(item, week) for item in all_items for week in all_weeks],
                                 columns=['Item', 'Week'])
 
 # Create pivot table from demand_over_time_data and then reset the index
-pivot = pd.pivot_table(demand_over_time_data, values='Demand', index=['Item'], 
+pivot = pd.pivot_table(st.session_state.demand_over_time_data, values='Demand', index=['Item'], 
                        columns=['Week'], fill_value=0).reset_index()
 
 # Melt the pivot table to go back to long format
@@ -63,14 +68,14 @@ initial_demand_profile = pd.merge(all_combinations, melted_pivot, on=['Item', 'W
 initial_demand_profile['Demand'] = initial_demand_profile['Demand'].fillna(0).astype(int)
 
 # Left outer join with item_master_data to add the required columns
-initial_demand_profile = pd.merge(initial_demand_profile, item_master_data[['Item', 'Lead Time', 'Order Type', 'MoQ', 'Safety Stock', 'Putaway Time']], 
+initial_demand_profile = pd.merge(initial_demand_profile, st.session_state.item_master_data[['Item', 'Lead Time', 'Order Type', 'MoQ', 'Safety Stock', 'Putaway Time']], 
                                   on='Item', how='left')
 
 # Sort by 'Item' (ascending) and 'Week' (ascending)
 initial_demand_profile = initial_demand_profile.sort_values(by=['Item', 'Week']).reset_index(drop=True)
 
 # Left outer join with existing_orders_data to add the 'Order' column
-initial_demand_profile = pd.merge(initial_demand_profile, existing_orders_data[['Item', 'Week', 'Order']], 
+initial_demand_profile = pd.merge(initial_demand_profile, st.session_state.existing_orders_data[['Item', 'Week', 'Order']], 
                                   on=['Item', 'Week'], how='left')
 
 # Fill NaN values in the 'Order' column with 0
@@ -157,9 +162,8 @@ def order_and_available_calc(df, inventory_data):
     return df
 
 # New function to update item_master_data
-def update_item_master_data(item_master_data, selected_item, selected_field, new_value):
-    item_master_data.loc[item_master_data['Item'] == selected_item, selected_field] = new_value
-    return item_master_data
+def update_item_master_data(selected_item, selected_field, new_value):
+    st.session_state['item_master_data'].loc[st.session_state['item_master_data']['Item'] == selected_item, selected_field] = new_value
 
 def recalculate_dataframes(item_master_data, inventory_data, bom_data, existing_orders_data):
     # Call the function
@@ -298,7 +302,7 @@ def recalculate_dataframes(item_master_data, inventory_data, bom_data, existing_
     
     return final_result_df, mrp_df, all_messages_df, item_master_data
 
-final_result_df, mrp_df, all_messages_df, item_master_data = recalculate_dataframes(item_master_data, inventory_data, bom_data, existing_orders_data)
+final_result_df, mrp_df, all_messages_df, item_master_data = recalculate_dataframes(st.session_state.item_master_data, st.session_state.inventory_data, st.session_state.bom_data, st.session_state.existing_orders_data)
 
 def plot_item_tables(df, item_master_data, all_messages_df):
     # Get unique items
@@ -381,18 +385,17 @@ def plot_item_tables(df, item_master_data, all_messages_df):
 
         st.altair_chart(chart, use_container_width=True)
         
-    # New Section: Add a section for updating item_master_data
-    st.write('### Update Item Data')
-    # Streamlit code for dropdown and button
-    selected_item = st.selectbox('Select Item', item_master_data['Item'].unique())
-    selected_field = st.selectbox('Select Field to Update', item_master_data.columns[1:])
-    new_value = st.number_input(f'New Value for {selected_field}')
+        # New Section: Add a section for updating item_master_data
+        # Streamlit code
+        st.write('### Update Item Data')
+        selected_field = st.selectbox('Select Field to Update', st.session_state['item_master_data'].columns[1:])
+        new_value = st.number_input(f'New Value for {selected_field}')
 
-    if st.button('Update'):
-        updated_item_master_data = update_item_master_data(item_master_data, selected_item, selected_field, new_value)
-        # Rerun calculations and update the Streamlit app
-        final_result_df, mrp_df, all_messages_df, item_master_data = recalculate_dataframes(updated_item_master_data, inventory_data, bom_data, existing_orders_data)
-        st.rerun()
+        if st.button('Update'):
+            update_item_master_data(selected_item, selected_field, new_value)
+        
+        # Rerun the app
+            st.rerun()
 
 # Sidebar for navigation
 page = st.sidebar.radio(

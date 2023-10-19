@@ -2,34 +2,26 @@ import pandas as pd
 from prophet import Prophet
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.arima.model import ARIMA
-from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
+from hyperopt import fmin, tpe, hp, STATUS_OK, Trials, STATUS_FAIL
 from hyperopt.exceptions import AllTrialsFailed
 import numpy as np
-from multiprocessing import Pool
+from multiprocessing import Pool, Value, Lock
 import logging
+import warnings
 import os
 import sys
-import random
-import json
+import time
+import traceback
+
+start_time = time.time()
 
 ##Logging##
 
-hyperopt_logger = logging.getLogger('hyperopt')
-prophet_logger = logging.getLogger('prophet')
-sarimax_logger = logging.getLogger('statsmodels')
+# Disable all logging messages
+logging.disable(logging.CRITICAL)
 
-# Set its level to WARNING or higher to suppress informational and debug messages
-hyperopt_logger.setLevel(logging.ERROR)
-prophet_logger.setLevel(logging.ERROR)
-sarimax_logger.setLevel(logging.ERROR)
-
-# Your main logger setup
-logging.basicConfig(filename='forecastrun.log', level=logging.ERROR, filemode='w', 
-                    format='%(asctime)s - %(levelname)s - %(message)s')
-
-logging.info("Information Only")
-logging.warning("Warnings")
-logging.error("Errors")
+# Disable all warning messages
+warnings.filterwarnings("ignore")
 
 ##End Logging##
 
@@ -243,6 +235,8 @@ arima_space = hp.choice('params', arima_combinations)
 # Create empty DataFrames to store results
 results_df = pd.DataFrame(columns=['Item Code', 'BestModel', 'BestParams', 'BestLoss'])
 excluded_df = pd.DataFrame(excluded_item_codes, columns=['Item Code'])
+model_params_df = pd.DataFrame()
+final_forecast_df = pd.DataFrame()
 
 # Placeholder values for excluded codes
 excluded_df['BestModel'] = 'no model'
@@ -330,6 +324,30 @@ def objective_arima(params, train_arima_filtered_weight, test_arima_filtered_wei
 # Define variable to store results from worker processes
 results_list = []
 
+# Define a counter for Loop
+counter = Value('i', 0)
+counter_lock = Lock()
+
+# This should be defined before the main block
+def update_counter(new_row):
+    global results_list
+    results_list.append(new_row)
+    with counter_lock:
+        try:
+            counter.value += 1
+            elapsed_time = time.time() - start_time
+            time_per_item_code = elapsed_time / counter.value
+            remaining_item_codes = len(random_item_codes) - counter.value
+            estimated_time_remaining = time_per_item_code * remaining_item_codes
+
+            # Convert estimated time from seconds to a more readable format
+            m, s = divmod(estimated_time_remaining, 60)
+            h, m = divmod(m, 60)
+
+            print(f"Optimization completed for {counter.value} of {len(random_item_codes)} item codes. Estimated time remaining: {int(h)}:{int(m):02d}:{int(s):02d}")
+        except Exception as e:
+            print(f"An exception occurred while updating the counter: {type(e).__name__}, {str(e)}")
+
 # Define function for loop multiprocessing
 def optimize_item_code(item_code):
         
@@ -376,35 +394,81 @@ def optimize_item_code(item_code):
         best_model = 'Average'
         best_params = 'Standard'
         all_failed = False
-
+    
     try:
         # SARIMAX optimization
+        recent_data = train_sarimax_filtered.tail(13)
+        non_zero_count = (recent_data['Weight'] > 0).sum()
+        check_sarimax = len(train_sarimax_filtered) >= 104 and non_zero_count >= 9
 
-        # Initialize counts and trials
         successful_evals = 0
         total_evals = 0
+        early_stop_triggered = False
         trials = Trials()
+        setattr(trials, 'best_loss_so_far', float('inf'))
+        setattr(trials, 'no_improvement_count', 0)
 
-        while successful_evals < 3 and total_evals < 100:
-            try:
-                best_sarimax = fmin(fn=lambda params: objective_sarimax(params, train_sarimax_filtered, test_sarimax_filtered),
-                                    space=sarimax_space, algo=tpe.suggest, trials=trials, max_evals=total_evals+1)
-            except AllTrialsFailed:
-                print(f"All trials for SARIMAX failed for Item Code: {item_code}")
-                break
-            total_evals +=1
+        def early_stopping_fn(trials, *args):
+            if len(trials.trials) == 0:
+                return False, args
 
-            # Count successful trials
-            successful_evals = sum(1 for trial in trials.trials if trial['result']['status'] == STATUS_OK)
+            successful_evals = sum([1 for trial in trials.trials if trial['result']['status'] == 'ok'])
 
-        if trials.best_trial['result']['status'] == STATUS_OK:
-            all_failed = False
-            if trials.best_trial['result']['loss'] < best_loss:
-                best_loss = trials.best_trial['result']['loss']
-                best_model = 'SARIMAX'
-                best_params = best_sarimax
+            print(f"Number of successful evaluations: {successful_evals}")
+
+            if successful_evals >= 15:
+                sorted_trials = sorted(trials.trials, key=lambda x: x['result'].get('loss', float('inf')))
+                current_best_loss = sorted_trials[0]['result'].get('loss', float('inf'))
+
+                if current_best_loss < trials.best_loss_so_far:
+                    trials.best_loss_so_far = current_best_loss
+                    trials.no_improvement_count = 0
+                else:
+                    trials.no_improvement_count += 1
+
+                print(f"Checking early stopping: best_loss_so_far = {trials.best_loss_so_far}, no_improvement_count = {trials.no_improvement_count}")
+
+                if trials.no_improvement_count >= 10:
+                    print(f"Early stopping activated.")
+                    return True, args
+
+            return False, args
+                        
+        if not check_sarimax:
+            print(f"Skipping SARIMAX for Item Code: {item_code} due to insufficient data.")
+        
+        else:
+            while successful_evals < 30 and total_evals < 300 and not early_stop_triggered:
+                try:
+                    best_sarimax = fmin(
+                        fn=lambda params: objective_sarimax(params, train_sarimax_filtered, test_sarimax_filtered),
+                        space=sarimax_space, algo=tpe.suggest, trials=trials, max_evals=total_evals + 1,
+                        early_stop_fn=early_stopping_fn
+                    )
+                    
+                    best_params_sarimax = all_combinations[best_sarimax['params']]
+                    
+                    # Check for early stopping
+                    if early_stopping_fn(trials)[0]:
+                        early_stop_triggered = True
+                    
+                except AllTrialsFailed:
+                    print(f"All trials for SARIMAX failed for Item Code: {item_code}")
+                    break
+
+                total_evals += 1
+                successful_evals = sum(1 for trial in trials.trials if trial['result']['status'] == STATUS_OK)
+            
+            if trials.best_trial['result']['status'] == STATUS_OK:
+                all_failed = False
+                if trials.best_trial['result']['loss'] < best_loss:
+                    best_loss = trials.best_trial['result']['loss']
+                    best_model = 'SARIMAX'
+                    best_params = best_params_sarimax
+                    
     except Exception as e:
         print(f"Exception in SARIMAX: {e}")
+        traceback.print_exc()
 
     try:
         # Prophet optimization
@@ -425,6 +489,8 @@ def optimize_item_code(item_code):
 
             # Count successful trials
             successful_evals = sum(1 for trial in trials.trials if trial['result']['status'] == STATUS_OK)
+            seasonality_conversion = ['additive', 'multiplicative']
+            best_prophet['seasonality_mode'] = seasonality_conversion[best_prophet['seasonality_mode']]
 
         if trials.best_trial['result']['status'] == STATUS_OK:
             all_failed = False
@@ -444,10 +510,12 @@ def optimize_item_code(item_code):
         
         trials = Trials()
 
-        while successful_evals < 10 and total_evals < 100:
+        while successful_evals < 20 and total_evals < 200:
             try:
                 best_arima = fmin(fn=lambda params: objective_arima(params, train_arima_filtered_weight, test_arima_filtered_weight),
                                 space=arima_space, algo=tpe.suggest, trials=trials, max_evals=total_evals+1)
+                
+                best_params_arima = arima_combinations[best_arima['params']]
             except AllTrialsFailed:
                 print(f"All trials for ARIMA failed for Item Code: {item_code}")
                 break
@@ -461,7 +529,7 @@ def optimize_item_code(item_code):
             if trials.best_trial['result']['loss'] < best_loss:
                 best_loss = trials.best_trial['result']['loss']
                 best_model = 'ARIMA'
-                best_params = best_arima
+                best_params = best_params_arima
     except Exception as e:
         print(f"Exception in ARIMA: {e}")
 
@@ -480,6 +548,10 @@ def optimize_item_code(item_code):
             'BestLoss': [best_loss]
         })
     
+    # Update the shared counter
+    with counter.get_lock():
+        counter.value += 1
+
     print(f"Completed optimization for Item Code: {item_code}")
     return new_row
 
@@ -487,20 +559,28 @@ def optimize_item_code(item_code):
 
 
 ##Multiprocessing##
+
+# Get the number of available CPU cores
+num_cores = os.cpu_count()
       
 if __name__ == '__main__':
-    random_item_codes = random.sample(unique_item_codes, 10)
+    random_item_codes = unique_item_codes
     print(f"Random item codes: {random_item_codes}")
-    with Pool(processes=10) as pool:
-        results_list = pool.map(optimize_item_code, random_item_codes)
+
+    results_list = []
+
+    with Pool(processes=num_cores-2) as pool:
+        for item_code in random_item_codes:
+            pool.apply_async(optimize_item_code, (item_code,), callback=update_counter)
+        pool.close()
+        pool.join()
 
     if results_list:
         results_df = pd.concat(results_list, ignore_index=True)
-
         # Concatenate results_df with excluded_df
         final_results_df = pd.concat([results_df, excluded_df], ignore_index=True)
         print(final_results_df)
-
+        model_params_df = final_results_df.copy()
     else:
         print("No DataFrames to concatenate.")
         
@@ -515,18 +595,19 @@ def run_sarimax(item_code, best_params, history_sarimax, forecast_template_sarim
     history_filtered_sarimax = history_sarimax[history_sarimax['Item Code'] == item_code]
     forecast_template_filtered_sarimax = forecast_template_sarimax[forecast_template_sarimax['Item Code'] == item_code]
     
-    # Parsing best_params from string to dictionary
-    best_params_dict_sarimax = json.loads(best_params.replace("'", "\""))
-    
     # Extracting the relevant columns and parameters
     y_train_sarimax = history_filtered_sarimax['Weight']
     exog_train_sarimax = history_filtered_sarimax[['WeekOfYear', 'MonthOfYear']]
     exog_forecast_sarimax = forecast_template_filtered_sarimax[['WeekOfYear', 'MonthOfYear']]
     
     # Fit the SARIMAX model using the best parameters and exogenous factors
-    model_sarimax = SARIMAX(y_train_sarimax, exog=exog_train_sarimax, 
-                            order=best_params_dict_sarimax['order'], 
-                            seasonal_order=best_params_dict_sarimax['seasonal_order'])
+    model_sarimax = SARIMAX(y_train_sarimax, 
+                        exog=exog_train_sarimax,
+                        order=(best_params['p'], best_params['d'], best_params['q']),
+                        seasonal_order=(best_params['P'], best_params['D'], best_params['Q'], best_params['s']),
+                        trend=best_params['trend'],
+                        enforce_stationarity=False,
+                        enforce_invertibility=False)
     
     model_fit_sarimax = model_sarimax.fit(disp=False)
     
@@ -535,8 +616,17 @@ def run_sarimax(item_code, best_params, history_sarimax, forecast_template_sarim
     
     # Extracting only the forecasted values to return
     forecast_values_sarimax = forecast_sarimax.predicted_mean
+
+    # Assuming forecast_template_filtered_sarimax has a Date column for the forecast dates
+    forecast_dates_sarimax = forecast_template_filtered_sarimax.index
     
-    return forecast_values_sarimax
+    output_df_sarimax = pd.DataFrame({
+        'Item Code': [item_code]*len(forecast_values_sarimax),
+        'Date': forecast_dates_sarimax,
+        'Weight': forecast_values_sarimax
+    })
+
+    return output_df_sarimax
 
 # Function for Prophet model
 def run_prophet(item_code, best_params, history_prophet, forecast_template_prophet):
@@ -544,14 +634,11 @@ def run_prophet(item_code, best_params, history_prophet, forecast_template_proph
     history_filtered_prophet = history_prophet[history_prophet['Item Code'] == item_code]
     forecast_template_filtered_prophet = forecast_template_prophet[forecast_template_prophet['Item Code'] == item_code]
     
-    # Parsing best_params from string to dictionary
-    best_params_dict_prophet = json.loads(best_params.replace("'", "\""))
-    
     # Fit the Prophet model with the additional parameters
     model_prophet = Prophet(
-        changepoint_prior_scale=best_params_dict_prophet['changepoint_prior_scale'],
-        seasonality_prior_scale=best_params_dict_prophet['seasonality_prior_scale'],
-        seasonality_mode=best_params_dict_prophet['seasonality_mode']
+        changepoint_prior_scale=best_params['changepoint_prior_scale'],
+        seasonality_prior_scale=best_params['seasonality_prior_scale'],
+        seasonality_mode=best_params['seasonality_mode']
     )
     model_prophet.fit(history_filtered_prophet)
     
@@ -560,16 +647,14 @@ def run_prophet(item_code, best_params, history_prophet, forecast_template_proph
     
     # Extract only the forecasted values and create output in common format
     forecast_values_prophet = forecast_prophet['yhat']
+    forecast_dates_prophet = forecast_prophet['ds']
     output_df_prophet = pd.DataFrame({
         'Item Code': [item_code]*len(forecast_values_prophet),
+        'Date': forecast_dates_prophet,
         'Weight': forecast_values_prophet
     })
     
     return output_df_prophet
-
-from statsmodels.tsa.arima.model import ARIMA
-import json
-import pandas as pd
 
 # Function for ARIMA model
 def run_arima(item_code, best_params, history_arima, forecast_template_arima):
@@ -577,27 +662,29 @@ def run_arima(item_code, best_params, history_arima, forecast_template_arima):
     history_filtered_arima = history_arima[history_arima['Item Code'] == item_code]
     forecast_template_filtered_arima = forecast_template_arima[forecast_template_arima['Item Code'] == item_code]
     
-    # Parsing best_params from string to dictionary
-    best_params_dict_arima = json.loads(best_params.replace("'", "\""))
-    
     # Extracting the relevant columns
     y_train_arima = history_filtered_arima['Weight']
     
     # Fit the ARIMA model using the best parameters
     model_arima = ARIMA(y_train_arima, 
-                        order=best_params_dict_arima['params'])
+                        order=(best_params['p'], best_params['d'], best_params['q']),
+                        trend=best_params['trend'])
     
-    model_fit_arima = model_arima.fit(disp=False)
+    model_fit_arima = model_arima.fit()
     
     # Generate forecast using the fitted model
     forecast_arima = model_fit_arima.forecast(steps=len(forecast_template_filtered_arima))
     
     # Extracting only the forecasted values to return
-    forecast_values_arima = forecast_arima[0]
+    forecast_values_arima = forecast_arima
+    
+    # Assuming forecast_template_filtered_arima has a Date column for the forecast dates
+    forecast_dates_arima = forecast_template_filtered_arima.index
     
     # Create output in common format
     output_df_arima = pd.DataFrame({
         'Item Code': [item_code]*len(forecast_values_arima),
+        'Date': forecast_dates_arima,
         'Weight': forecast_values_arima
     })
     
@@ -615,7 +702,7 @@ def run_other(item_code, best_model, history_all, forecast_template):
     # Generate forecast based on the best_model
     if best_model == 'Average' or best_model == 'no model':
         # Compute the average of historical data
-        average_value = history_filtered_other['Weight'].mean()
+        average_value = history_filtered_other['Weight'].iloc[-4:].mean()
         forecast_values_other = [average_value] * len(forecast_template_filtered_other)
         
     elif best_model == 'Naive':
@@ -623,9 +710,13 @@ def run_other(item_code, best_model, history_all, forecast_template):
         naive_value = history_filtered_other['Weight'].iloc[-1]
         forecast_values_other = [naive_value] * len(forecast_template_filtered_other)
     
+    # Assuming forecast_template_filtered_other has a Date column for the forecast dates
+    forecast_dates_other = forecast_template_filtered_other['Date']
+    
     # Create output in common format
     output_df_other = pd.DataFrame({
         'Item Code': [item_code] * len(forecast_values_other),
+        'Date': forecast_dates_other,
         'Weight': forecast_values_other
     })
     
@@ -636,33 +727,33 @@ def run_other(item_code, best_model, history_all, forecast_template):
 
 ##Forecasting##
 
-# Initialize an empty list to hold the output data frames from each function
-output_data_frames = []
-
 # Assuming final_results_df holds the best_params and best_model for each item code
-for index, row in final_results_df.iterrows():
+for index, row in model_params_df.iterrows():
     item_code = row['Item Code']
-    best_params = row['Best Params']
-    best_model = row['Best Model']
+    best_params = row['BestParams']
+    best_model = row['BestModel']
+    
+    # Initialize an empty DataFrame to hold the output of a single iteration
+    output_df_iteration = pd.DataFrame()
     
     if best_model == 'SARIMAX':
         output_sarimax = run_sarimax(item_code, best_params, history_sarimax, forecast_template_sarimax)
-        output_data_frames.append(output_sarimax)
-        
+        output_df_iteration = output_sarimax
+    
     elif best_model == 'Prophet':
         output_prophet = run_prophet(item_code, best_params, history_prophet, forecast_template_prophet)
-        output_data_frames.append(output_prophet)
+        output_df_iteration = output_prophet
         
     elif best_model == 'ARIMA':
         output_arima = run_arima(item_code, best_params, history_arima, forecast_template_arima)
-        output_data_frames.append(output_arima)
+        output_df_iteration = output_arima
         
     else:  # For 'Average', 'Naive', or 'no model'
         output_other = run_other(item_code, best_model, history_all, forecast_template)
-        output_data_frames.append(output_other)
+        output_df_iteration = output_other
 
-# Concatenate all output data frames into a single data frame
-final_forecast_df = pd.concat(output_data_frames, ignore_index=True)
+    # Concatenate output_df_iteration to final_forecast_df
+    final_forecast_df = pd.concat([final_forecast_df, output_df_iteration], ignore_index=True)
 
 # Save the forecast to a CSV file
 final_forecast_df.to_csv('forecasts.csv', index=False)

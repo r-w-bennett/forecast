@@ -4,17 +4,15 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.arima.model import ARIMA
 from hyperopt import fmin, tpe, hp, STATUS_OK, Trials, STATUS_FAIL
 from hyperopt.exceptions import AllTrialsFailed
-from dask.distributed import Client
-from multiprocessing import Value, Lock
 import numpy as np
+from multiprocessing import Value, Lock
+from dask import delayed, compute
 import logging
 import warnings
 import os
 import sys
 import time
 import traceback
-
-client = Client()
 
 start_time = time.time()
 
@@ -350,6 +348,7 @@ def update_counter(new_row):
             print(f"Optimization completed for {counter.value} of {len(random_item_codes)} item codes. Estimated time remaining: {int(h)}:{int(m):02d}:{int(s):02d}")
         except Exception as e:
             print(f"An exception occurred while updating the counter: {type(e).__name__}, {str(e)}")
+    pass
 
 # Define function for loop multiprocessing
 def optimize_item_code(item_code):
@@ -557,14 +556,12 @@ def optimize_item_code(item_code):
 
     print(f"Completed optimization for Item Code: {item_code}")
     return new_row
+pass
 
 ##End Model Objective Functions##
 
 
-##Dask##
-
-# Initialize Dask client
-client = Client()
+##Multiprocessing##
 
 # Get the number of available CPU cores
 num_cores = os.cpu_count()
@@ -573,13 +570,17 @@ if __name__ == '__main__':
     random_item_codes = unique_item_codes
     print(f"Random item codes: {random_item_codes}")
 
-    results_list = []
+    delayed_results = []
 
-    # Submit tasks to Dask
-    futures = [client.submit(optimize_item_code, item_code) for item_code in random_item_codes]
+    for item_code in random_item_codes:
+        result = delayed(optimize_item_code)(item_code)
+        delayed_results.append(result)
 
-    # Gather results from Dask
-    results_list = client.gather(futures)
+    results_list = compute(*delayed_results)
+
+    # Apply the callback function to each result
+    for result in results_list:
+        update_counter(result)
 
     if results_list:
         results_df = pd.concat(results_list, ignore_index=True)
@@ -589,8 +590,8 @@ if __name__ == '__main__':
         model_params_df = final_results_df.copy()
     else:
         print("No DataFrames to concatenate.")
-
-##End Dask##
+        
+##End Multiprocessing##
 
 
 ##Forecasting Objective Functions##

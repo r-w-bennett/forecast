@@ -2,7 +2,7 @@ import pandas as pd
 from prophet import Prophet
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.arima.model import ARIMA
-from hyperopt import fmin, tpe, hp, STATUS_OK, Trials, STATUS_FAIL
+from hyperopt import fmin, atpe, hp, STATUS_OK, Trials, STATUS_FAIL
 from hyperopt.exceptions import AllTrialsFailed
 import numpy as np
 from multiprocessing import Pool, Value, Lock
@@ -442,7 +442,7 @@ def optimize_item_code(item_code):
                 try:
                     best_sarimax = fmin(
                         fn=lambda params: objective_sarimax(params, train_sarimax_filtered, test_sarimax_filtered),
-                        space=sarimax_space, algo=tpe.suggest, trials=trials, max_evals=total_evals + 1,
+                        space=sarimax_space, algo=atpe.suggest, trials=trials, max_evals=total_evals + 1,
                         early_stop_fn=early_stopping_fn
                     )
                     
@@ -481,7 +481,7 @@ def optimize_item_code(item_code):
         while successful_evals < 10 and total_evals < 100:
             try:
                 best_prophet = fmin(fn=lambda params: objective_prophet(params, train_prophet_filtered, test_prophet_filtered),
-                                    space=prophet_space, algo=tpe.suggest, trials=trials, max_evals=total_evals+1)
+                                    space=prophet_space, algo=atpe.suggest, trials=trials, max_evals=total_evals+1)
             except AllTrialsFailed:
                 print(f"All trials for Prophet failed for Item Code: {item_code}")
                 break
@@ -513,7 +513,7 @@ def optimize_item_code(item_code):
         while successful_evals < 20 and total_evals < 200:
             try:
                 best_arima = fmin(fn=lambda params: objective_arima(params, train_arima_filtered_weight, test_arima_filtered_weight),
-                                space=arima_space, algo=tpe.suggest, trials=trials, max_evals=total_evals+1)
+                                space=arima_space, algo=atpe.suggest, trials=trials, max_evals=total_evals+1)
                 
                 best_params_arima = arima_combinations[best_arima['params']]
             except AllTrialsFailed:

@@ -418,7 +418,3 @@ elif page == 'Exception Messages':
         st.write("No Exceptions")
     else:
         st.table(all_messages_df.set_index('Week'))
-
-if st.sidebar.button('Close app'):
-    st.sidebar.write('Closing the app...')
-    os.kill(os.getpid(), signal.SIGTERM)

@@ -1,0 +1,45 @@
+import pandas as pd
+import numpy as np
+
+# File path
+file_path = 'C:\\PythonLocal\\Forecast\\ForecastData.xlsx'
+
+# Load each sheet into a separate DataFrame
+sales_history = pd.read_excel(file_path, sheet_name='Sales')
+birds_forecast = pd.read_excel(file_path, sheet_name='Forecasted Birds')
+birds_history = pd.read_excel(file_path, sheet_name='Bird Received')
+
+# Preprocessing birds_history: Remove the earliest row
+birds_history = birds_history.sort_values(by='Week Commencing')
+birds_history = birds_history.iloc[1:]
+
+# Create item_master dataframe
+item_master = sales_history.drop(columns=['Week Commencing', 'Total Weight (KG)'])
+item_master = item_master.drop_duplicates()
+
+# Find the earliest and latest dates in 'Week Commencing'
+earliest_date = sales_history['Week Commencing'].min()
+latest_date = sales_history['Week Commencing'].max()
+
+# Generate a date range of Mondays between the earliest and latest dates
+monday_range = pd.date_range(start=earliest_date, end=latest_date, freq='W-MON')
+
+# Create a new DataFrame from this date range
+date_range = pd.DataFrame(monday_range, columns=['Week Commencing'])
+
+# Assign a temporary key to both DataFrames for the Cartesian join
+item_master['key'] = 1
+date_range['key'] = 1
+
+# Perform the Cartesian join
+cartesian_df = pd.merge(item_master, date_range, on='key')
+
+# Drop the temporary key column
+cartesian_df = cartesian_df.drop(columns=['key'])
+
+# Perform a left join
+sales_history = pd.merge(cartesian_df, sales_history[['Item Code', 'Week Commencing', 'Total Weight (KG)']], 
+                     on=['Item Code', 'Week Commencing'], how='left')
+
+# Replace NaN values in Total Weight (KG) with 0
+sales_history['Total Weight (KG)'] = sales_history['Total Weight (KG)'].fillna(0)

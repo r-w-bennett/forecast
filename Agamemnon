@@ -1,0 +1,188 @@
+# AGAMEMNON
+
+import pandas as pd
+from statsforecast import StatsForecast
+from statsforecast.models import Naive, SeasonalNaive, WindowAverage, AutoARIMA, HoltWinters
+import numpy as np
+from sklearn.metrics import mean_pinball_loss
+from tqdm import tqdm
+from gluonts.dataset.pandas import PandasDataset
+from gluonts.torch.model.deepar import DeepAREstimator
+import time
+import sys
+
+# Opening Flair
+print("----AGAMEMNON----")
+print()
+print("Advanced Consumption Based Forecasting for Finished Goods")
+print()
+print("Hazeldenes Chicken Farm")
+print()
+print("Author: Robert Bennett")
+print()
+print("Agamemnon is", end='', flush=True)
+for _ in range(6):
+    print('.', end='', flush=True)
+    time.sleep(0.5)
+for _ in range(6):  # Number of flashes; adjust as needed
+    # Print "ACTIVE" and then erase it
+    print("\rAgamemnon is ACTIVE", end='', flush=True)
+    time.sleep(0.5)  # Adjust the flashing speed if needed
+    print("\rAgamemnon is       ", end='', flush=True)  # Overwrite "ACTIVE" with spaces
+    time.sleep(0.5)
+print("\rAgamemnon is ACTIVE", end='', flush=True)
+print()
+
+# Main Sequence
+def main():
+    # Load the dataset
+    file_path = 'C:\\PythonLocal\\Forecast\\ForecastData.xlsx'
+    base_data = pd.read_excel(file_path, sheet_name='Sales')
+
+    print("Data Load Complete")
+
+    # Limit the dataset to randomly selected item codes for testing purposes (##COMMENT IN OR OUT BASED ON REQUIREMENTS)
+    random_item_codes = base_data['Item Code'].sample(10, random_state=1).unique()
+    base_data = base_data[base_data['Item Code'].isin(random_item_codes)]
+    base_data = base_data.astype({'Item Code': 'str', 'Week Commencing': 'datetime64[ns]', 'Total Weight (KG)': 'float32', 'Cut Type': 'category', 'Flock': 'category', 'Product State': 'category', 'Grade': 'category'})
+    print("Random Codes Selected")
+    
+    # Creating the item_master dataframe
+    item_master = base_data.drop(columns=['Week Commencing', 'Total Weight (KG)']).drop_duplicates() #Drops the transactional data and selects unique item codes
+    item_master = item_master.rename(columns={'Item Code': 'unique_id'}) #Renames columns to standard data science naming conventions
+
+    print("Item Master Created")
+
+    # Creating the sales_data dataframe
+    sales_data = base_data.drop(base_data.columns.difference(['Item Code', 'Week Commencing', 'Total Weight (KG)']), axis=1) #Selects the transactional data only
+    sales_data = sales_data.pivot(index='Item Code', columns='Week Commencing', values='Total Weight (KG)').fillna(0) #Creates a matrix in order to fill missing values
+    sales_data = sales_data.stack().reset_index() #Reverts back to column format
+    sales_data = sales_data.rename(columns={'Item Code': 'unique_id', 'Week Commencing': 'ds', 0: 'y'}) #Renames columns to standard data science naming conventions
+    sales_data = sales_data.sort_values(by=['unique_id', 'ds']) #Ensures that data is in the correct timeseries order.
+
+    print("Sales Data Constructed")
+
+    # Create Train and Test datasets
+    train_data = sales_data[sales_data['ds'] < (sales_data['ds'].min() +0.8 * (sales_data['ds'].max() - sales_data['ds'].min()))] #Calculates 80% point to create train set
+    test_data = sales_data[~sales_data.index.isin(train_data.index)] #Selects rows from sales not already included in train set
+    h = test_data['ds'].nunique() #Sets the forecast horizon to equal test data
+
+    print("Train and Test Data Established")
+
+    # Generate Baseline Forecasts
+    print("Activating Baseline Forecast")
+    baseline_model = StatsForecast(models=[Naive(), 
+                                            SeasonalNaive(season_length=52), 
+                                            WindowAverage(window_size=4)],
+                                    freq='W-MON', fallback_model=Naive(), n_jobs=-1)
+
+  
+    baseline_model.fit(train_data)
+    
+    print("Baseline Models Generated")
+
+    baseline_test_forecast = baseline_model.forecast(df=train_data, h=h, level=[90], prediction_intervals=90) #Consumes model to create a 'forecast' which we can compae to test data
+
+    cols = ['Naive', 'Naive-lo-90', 'Naive-hi-90', 'SeasonalNaive',
+        'SeasonalNaive-lo-90', 'SeasonalNaive-hi-90', 'WindowAverage',
+        'WindowAverage-lo-90', 'WindowAverage-hi-90']
+    baseline_test_forecast.loc[:, cols] = baseline_test_forecast.loc[:, cols].clip(0) #Changes any negative to number to zero.
+
+    baseline_test_forecast = baseline_test_forecast.reset_index().merge(test_data, on=['ds', 'unique_id'], how='left') #Merges actual sales values from test data for comparison purposes.
+
+    print("Baseline Forecast Successful")
+
+    # Evaluate Baseline Model Performance
+
+    def smape(y_true, y_pred):
+        if y_true.ndim > 1:
+            y_true = y_true.reshape(-1)
+        if y_pred.ndim > 1:
+            y_pred = y_pred.reshape(-1)
+
+        denominator = (np.abs(y_true) + np.abs(y_pred)) / 2.0
+        diff = np.abs(y_true - y_pred) / denominator
+        diff[denominator == 0] = 0.0
+        return (100 * np.mean(diff)) / 2 #Sets the function for calculating sMAPE
+
+    print(f'Baseline sMAPE = {smape(baseline_test_forecast["y"], baseline_test_forecast["Naive"]):.2f}%')
+    print(f'Baseline Pinball = {mean_pinball_loss(baseline_test_forecast["y"], baseline_test_forecast["Naive-lo-90"], alpha=0.05):.2f}, {mean_pinball_loss(baseline_test_forecast["y"], baseline_test_forecast["Naive-hi-90"], alpha=0.95):.2f}')
+
+    def coverage_prob(y_true, y_lo, y_hi):
+        return np.mean((y_lo <= y_true) & (y_true <= y_hi)) #Sets the function for calculating coverage probability
+
+    print(f'Baseline Coverage = {100 * coverage_prob(baseline_test_forecast["y"], baseline_test_forecast["Naive-lo-90"], baseline_test_forecast["Naive-hi-90"]):.2f}%')
+
+    # Generate Advanced Model Forecasts
+    print("Activating Advanced Forecast")
+    advanced_model = StatsForecast(models=[AutoARIMA(season_length=52, stepwise=True),
+                                            HoltWinters(season_length=52, error_type='A')],
+                                    freq='W-MON', fallback_model=Naive(), n_jobs=-1)
+
+    advanced_model.fit(train_data)
+
+    print("Advanced Models Generated")
+
+    advanced_test_forecast = advanced_model.forecast(df=train_data, h=h, level=[90], prediction_intervals=90)
+
+    cols = advanced_test_forecast.columns[1:]
+    advanced_test_forecast.loc[:, cols] = advanced_test_forecast.loc[:, cols].clip(0)
+    advanced_test_forecast = advanced_test_forecast.reset_index().merge(test_data, on=['ds', 'unique_id'], how='left')
+
+    print("Advanced Forecast Successful")
+
+    print(f'Advanced sMAPE = {smape(advanced_test_forecast["y"], advanced_test_forecast["AutoARIMA"]):.2f}%')
+    print(f'Advanced Pinball = {mean_pinball_loss(advanced_test_forecast["y"], advanced_test_forecast["AutoARIMA-lo-90"], alpha=0.05):.2f}, {mean_pinball_loss(advanced_test_forecast["y"], advanced_test_forecast["AutoARIMA-hi-90"], alpha=0.95):.2f}')
+    print(f'Advanced Coverage Probability = {100 * coverage_prob(advanced_test_forecast["y"], advanced_test_forecast["AutoARIMA-lo-90"], advanced_test_forecast["AutoARIMA-hi-90"]):.2f}%')
+
+    # Generate ML Model Forecasts
+    print("Activating Machine Learning Forecast")
+    sales_data_exog = sales_data.merge(item_master[['unique_id', 'Cut Type', 'Flock', 'Product State', 'Grade']], on='unique_id', how='left')
+    train_data_exog = sales_data_exog[sales_data_exog['ds'] < (sales_data_exog['ds'].min() +0.8 * (sales_data_exog['ds'].max() - sales_data_exog['ds'].min()))] #Calculates 80% point to create train set
+    train_data_exog = train_data_exog.reset_index(drop=True)
+    train_data_exog = train_data_exog.sort_values(by=['unique_id', 'ds'])
+    test_data_exog = sales_data_exog[~sales_data_exog.index.isin(train_data_exog.index)] #Selects rows from sales not already included in train set
+    test_data_exog = test_data_exog.reset_index(drop=True)
+    test_data_exog = test_data_exog.sort_values(by=['unique_id', 'ds'])
+    cut_cardinality = sales_data_exog['Cut Type'].nunique()
+    flock_cardinality = sales_data_exog['Flock'].nunique()
+    state_cardinality = sales_data_exog['Product State'].nunique()
+    grade_cardinality = sales_data_exog['Grade'].nunique()
+    train_ds = PandasDataset.from_long_dataframe(train_data_exog, target='y', item_id='unique_id', 
+                                       timestamp='ds', freq='W-MON', static_feature_columns=['Cut Type', 'Flock', 'Product State', 'Grade'])
+    
+    estimator = DeepAREstimator(freq='W-MON', prediction_length=h, num_layers=2, num_feat_static_cat=4,
+                            cardinality=[cut_cardinality, flock_cardinality, state_cardinality, grade_cardinality],
+                            trainer_kwargs={'accelerator': 'cpu','max_epochs':40})
+    
+    predictor = estimator.train(train_ds)
+    
+    print("Machine Learning Models Generated")
+    
+    def make_df_preds(predictor, dataset):
+        pred = list(predictor.predict(dataset))
+        all_preds = list()
+        for item in pred:
+            unique_id = item.item_id
+            p = item.samples.mean(axis=0)
+            plo = np.percentile(item.samples, 5, axis=0)
+            phi = np.percentile(item.samples, 95, axis=0)
+            dates = pd.date_range(start=item.start_date.to_timestamp(), periods=len(p), freq='W-MON')
+            category_pred = pd.DataFrame({'ds': dates, 'unique_id': unique_id, 'pred': p, 'plo': plo, 'phi': phi})
+            all_preds += [category_pred]
+        all_preds = pd.concat(all_preds, ignore_index=True)
+        return all_preds
+
+    all_preds = make_df_preds(predictor, train_ds)
+    all_preds = all_preds.merge(test_data[['unique_id', 'ds', 'y']], on=['unique_id', 'ds'], how='left')
+    
+    print("Machine Learning Forecast Successful")
+    
+    print(f'Machine Learning sMAPE = {smape(all_preds["y"], all_preds["pred"]):.2f}%')
+    print(f'Machine Learning = {mean_pinball_loss(all_preds["y"], all_preds["plo"], alpha=0.05):.2f}, {mean_pinball_loss(all_preds["y"], all_preds["phi"], alpha=0.95):.2f}')
+    print(f'Machine Learning Probability = {100 * coverage_prob(all_preds["y"], all_preds["plo"], all_preds["phi"]):.2f}%')
+    
+    return all_preds, advanced_test_forecast, baseline_test_forecast
+    
+if __name__ == '__main__':
+    all_preds, advanced_test_forecast, baseline_test_forecast = main()
